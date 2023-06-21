@@ -22,6 +22,12 @@ class _03_RegisterUserTest {
     static void initDriverAuth() {
         AppUtils.loadProperties();
         driver = AppUtils.initDriver();
+//        driver = AppUtils.initDriver(
+//                "neo4j",
+//                "dispatcher-locations-cracks",
+//                "neo4j://3.239.238.69:7687"
+//        );
+//        jwtSecret = "secret";
         jwtSecret = AppUtils.getJwtSecret();
 
         if (driver != null) driver.session().executeWrite(tx -> tx.run("MATCH (u:User {email: $email}) DETACH DELETE u", Values.parameters("email", email)));
