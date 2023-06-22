@@ -2,7 +2,10 @@ package neoflix.services;
 
 import neoflix.AppUtils;
 import neoflix.Params;
+import neoflix.ValidationException;
 import org.neo4j.driver.Driver;
+import org.neo4j.driver.Values;
+import org.neo4j.driver.exceptions.NoSuchRecordException;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -47,7 +50,32 @@ public class FavoriteService {
         // TODO: Retrieve a list of movies favorited by the user
         // TODO: Close session
 
-        return AppUtils.process(userFavorites.getOrDefault(userId, List.of()),params);
+//        return AppUtils.process(userFavorites.getOrDefault(userId, List.of()),params);
+
+        // Open a new session
+        try (var session = this.driver.session()) {
+            // Retrieve a list of movies favorited by the user
+            return session.executeRead(
+                    tx ->
+                        {
+                            String query = String.format(
+                                    """
+                                        MATCH (u:User {userId: $userId})-[r:HAS_FAVORITE]->(m:Movie)
+                                        RETURN m {
+                                        .*,
+                                          favorite: true
+                                        } AS movie
+                                        ORDER BY m.`%s` %s
+                                        SKIP $skip
+                                        LIMIT $limit
+                                    """,
+                                    params.sort(Params.Sort.title), params.order()
+                            );
+                            var res = tx.run(query, Values.parameters("userId", userId, "skip", params.skip(), "limit", params.limit()));
+                            return res.list(row -> row.get("movie").asMap());
+                        }
+            );
+        }
     }
     // end::all[]
 
@@ -68,20 +96,51 @@ public class FavoriteService {
         // TODO: Close the session
         // TODO: Return movie details and `favorite` property
 
-        var foundMovie = popular.stream().filter(m -> movieId.equals(m.get("tmdbId"))).findAny();
+//        var foundMovie = popular.stream().filter(m -> movieId.equals(m.get("tmdbId"))).findAny();
+//
+//        if (users.stream().anyMatch(u -> u.get("userId").equals(userId)) || foundMovie.isEmpty()) {
+//            throw new RuntimeException("Couldn't create a favorite relationship for User %s and Movie %s".formatted(userId, movieId));
+//        }
+//
+//        var movie = foundMovie.get();
+//        var favorites = userFavorites.computeIfAbsent(userId, (k) -> new ArrayList<>());
+//        if (!favorites.contains(movie)) {
+//            favorites.add(movie);
+//        }
+//        var copy = new HashMap<>(movie);
+//        copy.put("favorite", true);
+//        return copy;
 
-        if (users.stream().anyMatch(u -> u.get("userId").equals(userId)) || foundMovie.isEmpty()) {
-            throw new RuntimeException("Couldn't create a favorite relationship for User %s and Movie %s".formatted(userId, movieId));
-        }
+        try (var session = driver.session()) {
+            return session.executeWrite(
+              tx ->
+                  {
+                      String statement =
+                      """
+                              MATCH (u:User {userId: $userId})
+                              MATCH (m:Movie {tmdbId: $movieId})
+                              
+                              MERGE (u)-[r:HAS_FAVORITE]->(m)
+                                       ON CREATE SET r.createdAt = datetime()
+                              
+                              RETURN m { .*, favorite: true } AS movie
+                      """;
+                      var res = tx.run(
+                              statement,
+                              Values.parameters("userId", userId, "movieId", movieId)
+                      );
 
-        var movie = foundMovie.get();
-        var favorites = userFavorites.computeIfAbsent(userId, (k) -> new ArrayList<>());
-        if (!favorites.contains(movie)) {
-            favorites.add(movie);
+                      return res.single().get("movie").asMap();
+                  }
+            );
+        } catch (NoSuchRecordException e) {
+            throw new ValidationException(
+                    String.format(
+                            "Couldn't create a favorite relationship for User %s and Movie %s",
+                            userId,
+                            movieId),
+                    Map.of("movie", movieId, "user",userId));
         }
-        var copy = new HashMap<>(movie);
-        copy.put("favorite", true);
-        return copy;
     }
     // end::add[]
 
@@ -97,23 +156,29 @@ public class FavoriteService {
      */
     // tag::remove[]
     public Map<String,Object> remove(String userId, String movieId) {
-        // TODO: Open a new Session
-        // TODO: Delete the HAS_FAVORITE relationship within a Write Transaction
-        // TODO: Close the session
-        // TODO: Return movie details and `favorite` property
-        if (users.stream().anyMatch(u -> u.get("userId").equals(userId))) {
-            throw new RuntimeException("Couldn't remove a favorite relationship for User %s and Movie %s".formatted(userId, movieId));
-        }
+        // Open a new Session
+        try (var session = this.driver.session()) {
+            // Removes HAS_FAVORITE relationship within a Write Transaction
+            return session.executeWrite(tx -> {
+                String statement = """
+                      MATCH (u:User {userId: $userId})-[r:HAS_FAVORITE]->(m:Movie {tmdbId: $movieId})
+                      DELETE r
 
-        var movie = popular.stream().filter(m -> movieId.equals(m.get("tmdbId"))).findAny().get();
-        var favorites = userFavorites.computeIfAbsent(userId, (k) -> new ArrayList<>());
-        if (favorites.contains(movie)) {
-            favorites.remove(movie);
+                      RETURN m {
+                        .*,
+                        favorite: false
+                      } AS movie
+                    """;
+                var res = tx.run(statement, Values.parameters("userId", userId, "movieId", movieId));
+                return res.single().get("movie").asMap();
+            });
+            // Throw an error if the user or movie could not be found
+        } catch (NoSuchRecordException e) {
+            throw new ValidationException(
+                    "Could not remove favorite movie for user",
+                    Map.of("movie",movieId, "user",userId)
+            );
         }
-
-        var copy = new HashMap<>(movie);
-        copy.put("favorite", false);
-        return copy;
     }
     // end::remove[]
 
